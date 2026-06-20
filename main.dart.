@@ -1,0 +1,347 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(KasirWamenaApp());
+}
+
+// DATABASE HELPER = BUKU CATATAN PACE 📖
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._init();
+  static Database? _database;
+  DatabaseHelper._init();
+
+  Future<Database> get database async {
+    if (_database!= null) return _database!;
+    _database = await _initDB('kasir_wamena.db');
+    return _database!;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, filePath);
+    return await openDatabase(path, version: 1, onCreate: _createDB);
+  }
+
+  Future _createDB(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE barang (
+        barcode TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        harga INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE transaksi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        jenis TEXT NOT NULL,
+        barcode TEXT NOT NULL,
+        nama TEXT NOT NULL,
+        jumlah INTEGER NOT NULL,
+        harga INTEGER NOT NULL,
+        tanggal TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<int> tambahBarang(String barcode, String nama, int harga) async {
+    final db = await instance.database;
+    return await db.insert('barang', {'barcode': barcode, 'nama': nama, 'harga': harga}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map?> cariBarang(String barcode) async {
+    final db = await instance.database;
+    final result = await db.query('barang', where: 'barcode =?', whereArgs: [barcode]);
+    return result.isNotEmpty? result.first : null;
+  }
+
+  Future<List<Map>> getAllBarang() async {
+    final db = await instance.database;
+    return await db.query('barang');
+  }
+
+  Future<int> tambahTransaksi(String jenis, String barcode, String nama, int jumlah, int harga, String tanggal) async {
+    final db = await instance.database;
+    return await db.insert('transaksi', {
+      'jenis': jenis, 'barcode': barcode, 'nama': nama,
+      'jumlah': jumlah, 'harga': harga, 'tanggal': tanggal
+    });
+  }
+
+  Future<List<Map>> getTransaksiHarian(String tanggal) async {
+    final db = await instance.database;
+    return await db.query('transaksi', where: 'tanggal LIKE?', whereArgs: ['$tanggal%']);
+  }
+
+  Future<List<Map>> getTransaksiBulanan(String bulan) async {
+    final db = await instance.database;
+    return await db.query('transaksi', where: 'tanggal LIKE?', whereArgs: ['$bulan%']);
+  }
+}
+
+class KasirWamenaApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Kasir Wamena v3.0',
+      theme: ThemeData(primaryColor: Colors.green[800], scaffoldBackgroundColor: Colors.brown[50]),
+      home: HomePage(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  @override
+  _HomePageState createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _currentIndex = 0;
+  final dbHelper = DatabaseHelper.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    List<Widget> pages = [
+      InputPage(jenis: 'jual', dbHelper: dbHelper),
+      InputPage(jenis: 'beli', dbHelper: dbHelper),
+      LaporanPage(dbHelper: dbHelper, tipe: 'harian'),
+      LaporanPage(dbHelper: dbHelper, tipe: 'bulanan'),
+      DataBarangPage(dbHelper: dbHelper),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(title: Text('KASIR WAMENA v3.0', style: TextStyle(fontWeight: FontWeight.bold)), backgroundColor: Colors.green[800]),
+      body: pages[_currentIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+        selectedItemColor: Colors.green[800],
+        unselectedItemColor: Colors.grey,
+        type: BottomNavigationBarType.fixed,
+        items: [
+          BottomNavigationBarItem(icon: Icon(Icons.add_shopping_cart), label: 'JUAL'),
+          BottomNavigationBarItem(icon: Icon(Icons.shopping_bag), label: 'BELI'),
+          BottomNavigationBarItem(icon: Icon(Icons.today), label: 'HARIAN'),
+          BottomNavigationBarItem(icon: Icon(Icons.calendar_month), label: 'BULAN'),
+          BottomNavigationBarItem(icon: Icon(Icons.inventory), label: 'DATA'),
+        ],
+      ),
+    );
+  }
+}
+
+class InputPage extends StatefulWidget {
+  final String jenis;
+  final DatabaseHelper dbHelper;
+  InputPage({required this.jenis, required this.dbHelper});
+
+  @override
+  _InputPageState createState() => _InputPageState();
+}
+
+class _InputPageState extends State<InputPage> {
+  final _formKey = GlobalKey<FormState>();
+  TextEditingController barcodeController = TextEditingController();
+  TextEditingController namaController = TextEditingController();
+  TextEditingController jumlahController = TextEditingController();
+  TextEditingController hargaController = TextEditingController();
+
+  void simpan() async {
+    if (_formKey.currentState!.validate()) {
+      String tanggal = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
+      await widget.dbHelper.tambahTransaksi(
+        widget.jenis, barcodeController.text, namaController.text,
+        int.parse(jumlahController.text), int.parse(hargaController.text), tanggal
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('WKWK ${widget.jenis.toUpperCase()} TERSIMPAN PACE!'), backgroundColor: Colors.green),
+      );
+      barcodeController.clear(); namaController.clear(); jumlahController.clear(); hargaController.clear();
+    }
+  }
+
+  Future scanBarcode() async {
+    final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => ScanBarcodePage()));
+    if (result!= null) {
+      barcodeController.text = result;
+      final barang = await widget.dbHelper.cariBarang(result);
+      if (barang!= null) {
+        setState(() {
+          namaController.text = barang['nama'];
+          hargaController.text = barang['harga'].toString();
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('WKWK BARCODE BARU! ISI NAMA + HARGA DULU PACE'), backgroundColor: Colors.orange),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(padding: EdgeInsets.all(20), child: Form(
+      key: _formKey, child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('INPUT ${widget.jenis.toUpperCase()}', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green[800])),
+        SizedBox(height: 20),
+        TextFormField(controller: barcodeController, decoration: InputDecoration(labelText: 'Barcode', border: OutlineInputBorder()), readOnly: true),
+        SizedBox(height: 10),
+        ElevatedButton.icon(onPressed: scanBarcode, icon: Icon(Icons.camera_alt, color: Colors.white),
+          label: Text('SCAN BARCODE', style: TextStyle(color: Colors.white)), style: ElevatedButton.styleFrom(backgroundColor: Colors.orange[700], padding: EdgeInsets.symmetric(vertical: 12))),
+        SizedBox(height: 15),
+        TextFormField(controller: namaController, decoration: InputDecoration(labelText: 'Nama Barang', border: OutlineInputBorder()), validator: (v) => v!.isEmpty? 'Isi dong Pace' : null),
+        SizedBox(height: 15),
+        TextFormField(controller: jumlahController, decoration: InputDecoration(labelText: 'Jumlah', border: OutlineInputBorder()), keyboardType: TextInputType.number, validator: (v) => v!.isEmpty? 'Isi dong Pace' : null),
+        SizedBox(height: 15),
+        TextFormField(controller: hargaController, decoration: InputDecoration(labelText: 'Harga Satuan Rp', border: OutlineInputBorder()), keyboardType: TextInputType.number, validator: (v) => v!.isEmpty? 'Isi dong Pace' : null),
+        SizedBox(height: 30),
+        ElevatedButton(onPressed: simpan, style: ElevatedButton.styleFrom(backgroundColor: Colors.green[800], padding: EdgeInsets.symmetric(vertical: 15)),
+          child: Text('SIMPAN ${widget.jenis.toUpperCase()}', style: TextStyle(fontSize: 18, color: Colors.white)))
+      ]),
+    ));
+  }
+}
+
+class ScanBarcodePage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(appBar: AppBar(title: Text('Arahkan ke Barcode Pace'), backgroundColor: Colors.green[800]),
+      body: MobileScanner(onDetect: (capture) {
+        final barcodes = capture.barcodes;
+        if (barcodes.isNotEmpty && barcodes.first.rawValue!= null) {
+          Navigator.pop(context, barcodes.first.rawValue);
+        }
+      }));
+  }
+}
+
+class DataBarangPage extends StatefulWidget {
+  final DatabaseHelper dbHelper;
+  DataBarangPage({required this.dbHelper});
+  @override
+  _DataBarangPageState createState() => _DataBarangPageState();
+}
+
+class _DataBarangPageState extends State<DataBarangPage> {
+  List<Map> daftarBarang = [];
+  final _formKey = GlobalKey<FormState>();
+  TextEditingController barcodeC = TextEditingController();
+  TextEditingController namaC = TextEditingController();
+  TextEditingController hargaC = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    loadBarang();
+  }
+
+  void loadBarang() async {
+    final data = await widget.dbHelper.getAllBarang();
+    setState(() => daftarBarang = data);
+  }
+
+  void tambahBarang() async {
+    if (_formKey.currentState!.validate()) {
+      await widget.dbHelper.tambahBarang(barcodeC.text, namaC.text, int.parse(hargaC.text));
+      Navigator.pop(context);
+      barcodeC.clear(); namaC.clear(); hargaC.clear();
+      loadBarang();
+    }
+  }
+
+  void showDialogTambah() {
+    showDialog(context: context, builder: (context) => AlertDialog(
+      title: Text('Tambah Barang Baru'),
+      content: Form(key: _formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextFormField(controller: barcodeC, decoration: InputDecoration(labelText: 'Scan/Isi Barcode'), readOnly: true),
+        ElevatedButton(onPressed: () async {
+          final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => ScanBarcodePage()));
+          if(result!= null) barcodeC.text = result;
+        }, child: Text('Scan Barcode'), style: ElevatedButton.styleFrom(backgroundColor: Colors.orange)),
+        TextFormField(controller: namaC, decoration: InputDecoration(labelText: 'Nama Barang'), validator: (v) => v!.isEmpty? 'Wajib isi' : null),
+        TextFormField(controller: hargaC, decoration: InputDecoration(labelText: 'Harga Jual Rp'), keyboardType: TextInputType.number, validator: (v) => v!.isEmpty? 'Wajib isi' : null),
+      ])),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: Text('Batal')),
+        ElevatedButton(onPressed: tambahBarang, child: Text('Simpan'), style: ElevatedButton.styleFrom(backgroundColor: Colors.green[800]))
+      ],
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(padding: EdgeInsets.all(20), child: Column(children: [
+      Text('DATA BARANG', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green[800])),
+      SizedBox(height: 20),
+      Expanded(child: ListView.builder(itemCount: daftarBarang.length, itemBuilder: (context, index) {
+        final b = daftarBarang[index];
+        return Card(child: ListTile(
+          title: Text(b['nama'], style: TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text('Barcode: ${b['barcode']}'),
+          trailing: Text('Rp ${NumberFormat('#,###').format(b['harga'])}', style: TextStyle(fontSize: 16, color: Colors.green[800])),
+        ));
+      })),
+      SizedBox(height: 10),
+      ElevatedButton.icon(onPressed: showDialogTambah, icon: Icon(Icons.add, color: Colors.white),
+        label: Text('Tambah Barang', style: TextStyle(color: Colors.white, fontSize: 18)),
+        style: ElevatedButton.styleFrom(backgroundColor: Colors.green[800], minimumSize: Size(double.infinity, 50)))
+    ]));
+  }
+}
+
+class LaporanPage extends StatefulWidget {
+  final DatabaseHelper dbHelper;
+  final String tipe;
+  LaporanPage({required this.dbHelper, required this.tipe});
+  @override
+  _LaporanPageState createState() => _LaporanPageState();
+}
+
+class _LaporanPageState extends State<LaporanPage> {
+  List<Map> data = [];
+  double totalJual = 0; double totalBeli = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    loadLaporan();
+  }
+
+  void loadLaporan() async {
+    String filter = widget.tipe == 'harian'? DateFormat('yyyy-MM-dd').format(DateTime.now()) : DateFormat('yyyy-MM').format(DateTime.now());
+    final result = widget.tipe == 'harian'? await widget.dbHelper.getTransaksiHarian(filter) : await widget.dbHelper.getTransaksiBulanan(filter);
+    setState(() {
+      data = result;
+      totalJual = data.where((t) => t['jenis'] == 'jual').fold(0, (sum, t) => sum + (t['jumlah'] * t['harga']));
+      totalBeli = data.where((t) => t['jenis'] == 'beli').fold(0, (sum, t) => sum + (t['jumlah'] * t['harga']));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    double untung = totalJual - totalBeli;
+    return Padding(padding: EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('LAPORAN ${widget.tipe.toUpperCase()}', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green[800])),
+      SizedBox(height: 20),
+      Card(color: Colors.green[100], child: ListTile(title: Text('Total Jual'), trailing: Text('Rp ${NumberFormat('#,###').format(totalJual)}', style: TextStyle(fontWeight: FontWeight.bold)))),
+      Card(color: Colors.red[100], child: ListTile(title: Text('Total Beli'), trailing: Text('Rp ${NumberFormat('#,###').format(totalBeli)}', style: TextStyle(fontWeight: FontWeight.bold)))),
+      Card(color: Colors.blue[100], child: ListTile(title: Text('Untung/Rugi'), trailing: Text('Rp ${NumberFormat('#,###').format(untung)}', style: TextStyle(fontWeight: FontWeight.bold, color: untung >= 0? Colors.green : Colors.red)))),
+      SizedBox(height: 20),
+      Text('Detail Transaksi:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      Expanded(child: ListView.builder(itemCount: data.length, itemBuilder: (context, index) {
+        final t = data[index];
+        return Card(child: ListTile(
+          leading: Icon(t['jenis'] == 'jual'? Icons.arrow_upward : Icons.arrow_downward, color: t['jenis'] == 'jual'? Colors.green : Colors.red),
+          title: Text(t['nama']),
+          subtitle: Text('${t['jumlah']} x Rp ${NumberFormat('#,###').format(t['harga'])}'),
+          trailing: Text('Rp ${NumberFormat('#,###').format(t['jumlah'] * t['harga'])}', style: TextStyle(fontWeight: FontWeight.bold)),
+        ));
+      }))
+    ]));
+  }
+}
